@@ -30,6 +30,13 @@
 //! which the node does not hold, so it is not opened: this gate proves the
 //! ticket, keeps no replay cache, and does not check the authenticator's
 //! clock skew. That the AP-REQ is this connection's is the transport's.
+//!
+//! Principal names are the identify capability's (ADR-0054): the ticket's
+//! service is compared with the claim, and with a keytab entry, as a
+//! `ServicePrincipalName`, so `HTTP/XMIP.example` is the service a ticket
+//! for `HTTP/xmip.example@EXAMPLE.COM` names, and
+//! [`Verifier::client_principal_of`] hands the client back as a
+//! `UserPrincipalName` in canonical form.
 
 pub mod crypto;
 pub mod der;
@@ -42,6 +49,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use context::Verified;
 use crypto::{AES256_CTS_HMAC_SHA1_96, TICKET_KEY_USAGE};
+use identify::{ServicePrincipalName, UserPrincipalName};
 use std::time::{SystemTime, UNIX_EPOCH};
 use xcore::{Mechanism, mechanism};
 
@@ -99,7 +107,39 @@ impl KeyEntry {
     }
 
     fn opens(&self, principal: &str, version: Option<u32>) -> bool {
-        self.principal == principal && (self.version.is_none() || self.version == version)
+        same_service(&self.principal, principal)
+            && (self.version.is_none() || self.version == version)
+    }
+}
+
+/// Whether two texts name the same service: the capability's own question
+/// where both are service principal names, and the text itself where either
+/// is not.
+fn same_service(ours: &str, theirs: &str) -> bool {
+    let read = ServicePrincipalName::parse;
+    match (read(ours), read(theirs)) {
+        (Some(ours), Some(theirs)) => ours.is(&theirs),
+        _ => ours == theirs,
+    }
+}
+
+/// The service the claim names: its `principal.service` evidence and its
+/// value must each be the service the ticket is for.
+fn claims(presented: &Presented, service: &str) -> Result<(), AuthenticateError> {
+    let evidence = presented
+        .evidence
+        .iter()
+        .find(|(name, _)| name == identify::principal::SERVICE)
+        .map(|(_, value)| value.as_str());
+    match [Some(presented.value.as_str()), evidence]
+        .into_iter()
+        .flatten()
+        .find(|claimed| !same_service(service, claimed))
+    {
+        Some(claimed) => Err(AuthenticateError::new(format!(
+            "the ticket is for '{service}' and the claim is '{claimed}'"
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -159,13 +199,7 @@ impl Verifier {
     /// principal against the claim.
     fn open(&self, presented: &Presented) -> Result<EncTicketPart, AuthenticateError> {
         let ticket = Self::ticket_of(presented)?;
-        if ticket.service_principal() != presented.value {
-            return Err(AuthenticateError::new(format!(
-                "the ticket is for '{}' and the claim is '{}'",
-                ticket.service_principal(),
-                presented.value
-            )));
-        }
+        claims(presented, &ticket.service_principal())?;
         if ticket.encryption_type != AES256_CTS_HMAC_SHA1_96 {
             return Err(AuthenticateError::new(format!(
                 "the ticket's encryption type is {} and this node decrypts \
@@ -199,6 +233,32 @@ impl Verifier {
         let part = self.open(presented)?;
         self.within_window(&part)?;
         Ok(part.client_principal())
+    }
+
+    /// The client a proven ticket names, as a user principal name in
+    /// canonical form: `cname@crealm`, the realm in lower case.
+    ///
+    /// # Errors
+    ///
+    /// As [`Verifier::client_of`], and where the client is not a simple user
+    /// principal: a host or a service, whose name has more than one
+    /// component.
+    pub fn client_principal_of(
+        &self,
+        presented: &Presented,
+    ) -> Result<UserPrincipalName, AuthenticateError> {
+        let part = self.open(presented)?;
+        self.within_window(&part)?;
+        let name = match part.client.as_slice() {
+            [user] => UserPrincipalName::of(user, &part.client_realm),
+            _ => None,
+        };
+        name.ok_or_else(|| {
+            AuthenticateError::new(format!(
+                "the ticket's client '{}' is not a user principal name: one user in one realm",
+                part.client_principal()
+            ))
+        })
     }
 
     fn within_window(&self, part: &EncTicketPart) -> Result<(), AuthenticateError> {
@@ -325,6 +385,55 @@ mod tests {
         let failure = verifier().verify(&claim).expect_err("refused");
 
         assert!(failure.message.contains("the claim is"));
+    }
+
+    #[test]
+    fn a_service_spelled_another_way_or_without_its_realm_is_the_service_the_ticket_names() {
+        let sealed = sealed_for(&["Alice"], NOW - 3_600, NOW + 3_600);
+        let token = token(SERVICE, REALM, &KEY, &sealed);
+
+        for spelling in ["HTTP/XMIP.Example@example.com", "HTTP/xmip.example"] {
+            let claim = Presented::passed(mechanism::kerberos(), spelling)
+                .with_evidence(
+                    identify::principal::SERVICE,
+                    "HTTP/xmip.example@example.com",
+                )
+                .with_proof(AP_REQ_PROOF, &token);
+            let client = verifier().client_principal_of(&claim).expect("a client");
+
+            assert_eq!(verifier().verify(&claim).expect("proven"), Verified::Proven);
+            assert_eq!(client.to_string(), "Alice@example.com", "{spelling}");
+            assert!(client.is(&UserPrincipalName::parse("EXAMPLE.COM\\alice").expect("a name")));
+        }
+    }
+
+    #[test]
+    fn another_service_is_refused_naming_both_and_a_host_client_is_not_a_user() {
+        let sealed = sealed_for(&["host", "pc1.example"], NOW - 3_600, NOW + 3_600);
+        let token = token(SERVICE, REALM, &KEY, &sealed);
+        let cased = Presented::passed(mechanism::kerberos(), "http/xmip.example@EXAMPLE.COM")
+            .with_proof(AP_REQ_PROOF, &token);
+        let filed = presented(&token)
+            .with_evidence(identify::principal::SERVICE, "HTTP/xmip.example@other.com");
+
+        let class = verifier().verify(&cased).expect_err("refused");
+        let realm = verifier().verify(&filed).expect_err("refused");
+        let host = verifier()
+            .client_principal_of(&presented(&token))
+            .expect_err("refused");
+
+        assert_eq!(
+            class.message,
+            "the ticket is for 'HTTP/xmip.example@EXAMPLE.COM' and the claim is \
+             'http/xmip.example@EXAMPLE.COM'"
+        );
+        assert!(realm.message.contains("'HTTP/xmip.example@other.com'"));
+        assert!(
+            host.message
+                .contains("'host/pc1.example@EXAMPLE.COM' is not a user principal name"),
+            "{}",
+            host.message
+        );
     }
 
     #[test]
