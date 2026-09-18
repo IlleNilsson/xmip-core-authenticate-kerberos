@@ -3,10 +3,12 @@
 Authenticate by kerberos: verifies a service ticket with the node's keytab. A technology of
 [xmip-core-authenticate](https://github.com/IlleNilsson/xmip-core-authenticate).
 
-Declared and not yet written; `architecture.toml` carries the maturity. When
-it is written it implements `Authenticator`, one mechanism at one gate (ADR-0050).
-What it may depend on is `repository-model.md` section 4 and ADR-0044: its
-capability, and no sibling.
+It decrypts the service ticket of an AP-REQ with the node's
+aes256-cts-hmac-sha1-96 key (RFC 3962, key usage 2), and checks the service
+principal, the ticket's validity window and that the client principal is the
+claim. It does not decrypt the authenticator, so it keeps no replay cache and
+proves possession of a ticket and not of its session key; other encryption
+types, SPNEGO wrapping and the keytab file format are refused or not read.
 
 ## Toolchain
 
