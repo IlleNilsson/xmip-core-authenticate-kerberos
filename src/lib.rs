@@ -34,9 +34,11 @@
 //! Principal names are the identify capability's (ADR-0054): the ticket's
 //! service is compared with the claim, and with a keytab entry, as a
 //! `ServicePrincipalName`, so `HTTP/XMIP.example` is the service a ticket
-//! for `HTTP/xmip.example@EXAMPLE.COM` names, and
-//! [`Verifier::client_principal_of`] hands the client back as a
-//! `UserPrincipalName` in canonical form.
+//! for `HTTP/xmip.example@EXAMPLE.COM` names. The client is sealed in the
+//! ticket, so it is learned here and not claimed: the gate is answered with
+//! a `Conclusion` that carries it as [`CLIENT`], and as `principal.user` in
+//! canonical form where it is one user in one realm and not a host or a
+//! service.
 
 pub mod crypto;
 pub mod der;
@@ -44,7 +46,7 @@ pub mod ticket;
 
 pub use ticket::{EncTicketPart, Ticket};
 
-use authenticate::{AuthenticateError, Authenticator, Presented};
+use authenticate::{AuthenticateError, Authenticator, Conclusion, Presented};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use context::Verified;
@@ -55,6 +57,9 @@ use xcore::{Mechanism, mechanism};
 
 /// The proof the identify sibling attaches the base64 AP-REQ under.
 pub const AP_REQ_PROOF: &str = "kerberos.ap-req";
+/// The evidence name the ticket's client is learned under, as the ticket
+/// names it: `cname@crealm`.
+pub const CLIENT: &str = "kerberos.client";
 
 type Clock = Box<dyn Fn() -> i64 + Send + Sync>;
 
@@ -222,8 +227,8 @@ impl Verifier {
         EncTicketPart::parse(&plaintext)
     }
 
-    /// The client principal a proven ticket names — the verified identity the
-    /// gate cannot yet return through [`Authenticator::verify`].
+    /// The client principal a proven ticket names, as the ticket names it.
+    /// [`Authenticator::conclude`] hands the gate the same.
     ///
     /// # Errors
     ///
@@ -285,9 +290,22 @@ impl Authenticator for Verifier {
     }
 
     fn verify(&self, presented: &Presented) -> Result<Verified, AuthenticateError> {
+        self.conclude(presented)
+            .map(|conclusion| conclusion.verified)
+    }
+
+    fn conclude(&self, presented: &Presented) -> Result<Conclusion, AuthenticateError> {
         let part = self.open(presented)?;
         self.within_window(&part)?;
-        Ok(Verified::Proven)
+        let conclusion = Conclusion::proven().learning(CLIENT, part.client_principal());
+
+        Ok(match part.client.as_slice() {
+            [user] => match UserPrincipalName::of(user, &part.client_realm) {
+                Some(name) => conclusion.learning(identify::principal::USER, name.to_string()),
+                None => conclusion,
+            },
+            _ => conclusion,
+        })
     }
 }
 
@@ -402,6 +420,12 @@ mod tests {
             let client = verifier().client_principal_of(&claim).expect("a client");
 
             assert_eq!(verifier().verify(&claim).expect("proven"), Verified::Proven);
+            let conclusion = verifier().conclude(&claim).expect("proven");
+            assert_eq!(
+                conclusion.learned(identify::principal::USER),
+                Some("Alice@example.com")
+            );
+            assert!(conclusion.learned(CLIENT).is_some());
             assert_eq!(client.to_string(), "Alice@example.com", "{spelling}");
             assert!(client.is(&UserPrincipalName::parse("EXAMPLE.COM\\alice").expect("a name")));
         }
