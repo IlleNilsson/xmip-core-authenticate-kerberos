@@ -6,11 +6,11 @@
 //! wrappings — GSS-API, SPNEGO, the RFC 4121 token id — are unwrapped to
 //! reach it. [`EncTicketPart`] is what the cipher holds once the node's key
 //! opens it: the client principal the ticket names and the window it is
-//! valid for. The DER is [`der`](crate::der); this technology reads the same
-//! token the identify sibling reads and depends on neither it nor its reader
-//! (ADR-0050 section 6).
+//! valid for. The DER is [`der`](crate::der), on the estate's one X.690
+//! reader; this technology reads the same token the identify sibling reads
+//! and does not depend on it (ADR-0050 section 6).
 
-use crate::der::{self, Element, principal};
+use crate::der::{self, Element, Required, principal};
 use authenticate::AuthenticateError;
 
 /// 1.3.6.1.5.5.2, SPNEGO.
