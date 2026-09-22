@@ -31,6 +31,8 @@ authenticate = { package = "xmip-core-authenticate", git = "https://github.com/I
 identify = { package = "xmip-core-identify", git = "https://github.com/IlleNilsson/xmip-core-identify", branch = "main" }
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+# X.690: the ticket is DER, read with the estate's one reader.
+asn1 = { package = "xmip-core-asn1", git = "https://github.com/IlleNilsson/xmip-core-asn1", branch = "main" }
 # RFC 3962: AES-256 in CBC with ciphertext stealing, HMAC-SHA1-96 for the
 # checksum, PBKDF2-HMAC-SHA1 for a key from a password. The AP-REQ arrives
 # as standard base64.
