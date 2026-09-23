@@ -1,7 +1,7 @@
 //! The DER an AP-REQ and its sealed part are, named the way RFC 4120 names
 //! them.
 //!
-//! The reader is the estate's one, `xmip-core-asn1`; this carried its own
+//! The reader is the estate's one, `xmip-core-library-asn1`; this carried its own
 //! until 2026-09-22, as did `identify/kerberos` for the clear part of the same
 //! token. What stays here is Kerberos's: every field of a Kerberos `SEQUENCE`
 //! is explicitly tagged and constructed, a missing one is named in the
