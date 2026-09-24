@@ -34,13 +34,14 @@ xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core
 # X.690: the ticket is DER, read with the estate's one reader.
 asn1 = { package = "xmip-core-library-asn1", git = "https://github.com/IlleNilsson/xmip-core-library-asn1", branch = "main" }
 # RFC 3962: AES-256 in CBC with ciphertext stealing, HMAC-SHA1-96 for the
-# checksum, PBKDF2-HMAC-SHA1 for a key from a password. The AP-REQ arrives
-# as standard base64.
+# checksum, PBKDF2-HMAC-SHA1 for a key from a password.
 aes = "0.8"
 hmac = "0.12"
 sha1 = "0.10"
 pbkdf2 = "0.12"
-base64 = "0.22"
+# The estate's encoding primitives: the base 64 the AP-REQ arrives in, and
+# hex, which the RFC 3961 vectors are written in.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [lints.rust]
 # forbid, not deny: a module has no business writing unsafe. The one exception

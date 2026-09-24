@@ -8,7 +8,10 @@ aes256-cts-hmac-sha1-96 key (RFC 3962, key usage 2), and checks the service
 principal, the ticket's validity window and that the client principal is the
 claim. It does not decrypt the authenticator, so it keeps no replay cache and
 proves possession of a ticket and not of its session key; other encryption
-types, SPNEGO wrapping and the keytab file format are refused or not read.
+types and the keytab file format are refused or not read. The `Negotiate`
+token — SPNEGO, GSS-API or a bare AP-REQ — is read by the identify
+capability's `identify::kerberos::Ticket`, the reader the first gate uses too;
+only the decrypted `EncTicketPart` is read here.
 
 ## Toolchain
 

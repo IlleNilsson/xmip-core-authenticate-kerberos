@@ -286,20 +286,18 @@ pub(crate) mod tests {
         message
     }
 
-    fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write;
-        bytes.iter().fold(String::new(), |mut text, byte| {
-            write!(text, "{byte:02x}").expect("a String takes writes");
-            text
-        })
-    }
-
     #[test]
     fn n_fold_matches_the_rfc_3961_vector() {
         // RFC 3961 Appendix A: 64-fold("012345") = be072631276b1955.
-        assert_eq!(hex(&n_fold(b"012345", 8)), "be072631276b1955");
+        assert_eq!(
+            codec::hex::encode(&n_fold(b"012345", 8)),
+            "be072631276b1955"
+        );
         // 56-fold("password") = 78a07b6caf85fa.
-        assert_eq!(hex(&n_fold(b"password", 7)), "78a07b6caf85fa");
+        assert_eq!(
+            codec::hex::encode(&n_fold(b"password", 7)),
+            "78a07b6caf85fa"
+        );
     }
 
     #[test]

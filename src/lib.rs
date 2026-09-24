@@ -12,16 +12,10 @@
 //! see [`crypto`]), and, where the checksum holds, reads the client
 //! principal and the ticket's validity window out of it. It refuses where the
 //! service principal is not the claim, where no held key opens the ticket, or
-//! where the ticket is outside its window with the configured leeway.
-//!
-//! **A gap for the owner, not worked around here.** `Authenticator::verify`
-//! answers only a [`Verified`], so this gate cannot hand back the one thing
-//! it learned that the first gate could not read — the client principal. It
-//! is exposed instead through [`Verifier::client_of`], and the capability has
-//! no way yet to replace a claim's value (the service) with the verified
-//! value (the client). Until it does, the record shows the service the ticket
-//! was for, which is true, and a Party resolves from the service, not the
-//! client. This is ADR-0050's to settle, said here and in the report.
+//! where the ticket is outside its window with the configured leeway. The
+//! token is read by the identify capability's `identify::kerberos::Ticket`,
+//! the reader the first gate reads it with; only the decrypted
+//! [`EncTicketPart`] is read here.
 //!
 //! Offline throughout (ADR-0045): the keytab is configuration, and no KDC is
 //! reached. Only `aes256-cts-hmac-sha1-96` is decrypted; `rc4-hmac`,
@@ -36,42 +30,23 @@
 //! `ServicePrincipalName`, so `HTTP/XMIP.example` is the service a ticket
 //! for `HTTP/xmip.example@EXAMPLE.COM` names. The client is sealed in the
 //! ticket, so it is learned here and not claimed: the gate is answered with
-//! a `Conclusion` that carries it as [`CLIENT`], and as `principal.user` in
+//! a `Conclusion` that carries it as [`evidence::KERBEROS_CLIENT`], and as `principal.user` in
 //! canonical form where it is one user in one realm and not a host or a
 //! service.
 
 pub mod crypto;
-pub mod der;
-pub mod ticket;
+pub mod enc_ticket_part;
 
-pub use ticket::{EncTicketPart, Ticket};
+pub use enc_ticket_part::EncTicketPart;
 
+use authenticate::clock::{Clock, Window};
 use authenticate::{AuthenticateError, Authenticator, Conclusion, Presented};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use context::Verified;
 use crypto::{AES256_CTS_HMAC_SHA1_96, TICKET_KEY_USAGE};
+use identify::evidence::{self, KERBEROS_AP_REQ};
+use identify::kerberos::Ticket;
 use identify::{ServicePrincipalName, UserPrincipalName};
-use std::time::{SystemTime, UNIX_EPOCH};
 use xcore::{Mechanism, mechanism};
-
-/// The proof the identify sibling attaches the base64 AP-REQ under.
-pub const AP_REQ_PROOF: &str = "kerberos.ap-req";
-/// The evidence name the ticket's client is learned under, as the ticket
-/// names it: `cname@crealm`.
-pub const CLIENT: &str = "kerberos.client";
-
-type Clock = Box<dyn Fn() -> i64 + Send + Sync>;
-
-/// Seconds since the Unix epoch, now.
-#[must_use]
-pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
-}
 
 /// One service key the node holds: the base key for a service principal at a
 /// key version.
@@ -134,7 +109,7 @@ fn claims(presented: &Presented, service: &str) -> Result<(), AuthenticateError>
     let evidence = presented
         .evidence
         .iter()
-        .find(|(name, _)| name == identify::principal::SERVICE)
+        .find(|(name, _)| name == evidence::PRINCIPAL_SERVICE)
         .map(|(_, value)| value.as_str());
     match [Some(presented.value.as_str()), evidence]
         .into_iter()
@@ -152,7 +127,6 @@ fn claims(presented: &Presented, service: &str) -> Result<(), AuthenticateError>
 /// off.
 pub struct Verifier {
     keytab: Vec<KeyEntry>,
-    leeway: i64,
     clock: Clock,
 }
 
@@ -163,22 +137,21 @@ impl Verifier {
     pub fn new(keytab: Vec<KeyEntry>) -> Self {
         Self {
             keytab,
-            leeway: 300,
-            clock: Box::new(now),
+            clock: Clock::system(300),
         }
     }
 
     /// How far a clock may be off before the validity window bites.
     #[must_use]
-    pub const fn with_leeway(mut self, seconds: i64) -> Self {
-        self.leeway = seconds;
+    pub fn with_leeway(mut self, seconds: i64) -> Self {
+        self.clock = self.clock.forgiving(seconds);
         self
     }
 
     /// Where the time comes from; the tests pin it.
     #[must_use]
     pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
-        self.clock = Box::new(clock);
+        self.clock = self.clock.reading(clock);
         self
     }
 
@@ -190,11 +163,10 @@ impl Verifier {
                 "'{name}' was presented and this authenticator verifies kerberos"
             )));
         }
-        let encoded = presented.proof(AP_REQ_PROOF).ok_or_else(|| {
-            AuthenticateError::new(format!("no {AP_REQ_PROOF} proof was presented"))
+        let encoded = presented.proof(evidence::KERBEROS_AP_REQ).ok_or_else(|| {
+            AuthenticateError::new(format!("no {KERBEROS_AP_REQ} proof was presented"))
         })?;
-        let bytes = STANDARD
-            .decode(encoded.trim())
+        let bytes = codec::base64::decode(encoded.trim())
             .map_err(|_| AuthenticateError::new("the AP-REQ is not base64"))?;
         Ticket::from_negotiate(&bytes)?
             .ok_or_else(|| AuthenticateError::new("the Negotiate token carries no Kerberos ticket"))
@@ -266,21 +238,13 @@ impl Verifier {
         })
     }
 
+    /// RFC 4120 5.3: a ticket is honored from its `starttime` through its
+    /// `endtime`, so the window closes the second after.
     fn within_window(&self, part: &EncTicketPart) -> Result<(), AuthenticateError> {
-        let now = (self.clock)();
-        if now.saturating_add(self.leeway) < part.start {
-            return Err(AuthenticateError::new(format!(
-                "the ticket is not valid before {} and it is {now}",
-                part.start
-            )));
-        }
-        if now.saturating_sub(self.leeway) > part.end {
-            return Err(AuthenticateError::new(format!(
-                "the ticket expired at {} and it is {now}",
-                part.end
-            )));
-        }
-        Ok(())
+        let window = Window::between(Some(part.start), Some(part.end.saturating_add(1)));
+        self.clock
+            .admits(window)
+            .map_err(|outside| AuthenticateError::new(format!("the ticket {outside}")))
     }
 }
 
@@ -297,11 +261,12 @@ impl Authenticator for Verifier {
     fn conclude(&self, presented: &Presented) -> Result<Conclusion, AuthenticateError> {
         let part = self.open(presented)?;
         self.within_window(&part)?;
-        let conclusion = Conclusion::proven().learning(CLIENT, part.client_principal());
+        let conclusion =
+            Conclusion::proven().learning(evidence::KERBEROS_CLIENT, part.client_principal());
 
         Ok(match part.client.as_slice() {
             [user] => match UserPrincipalName::of(user, &part.client_realm) {
-                Some(name) => conclusion.learning(identify::principal::USER, name.to_string()),
+                Some(name) => conclusion.learning(evidence::PRINCIPAL_USER, name.to_string()),
                 None => conclusion,
             },
             _ => conclusion,
@@ -312,7 +277,7 @@ impl Authenticator for Verifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ticket::tests::{ap_req, enc_ticket_part};
+    use crate::enc_ticket_part::tests::{ap_req, enc_ticket_part};
 
     const NOW: i64 = 1_800_000_000;
     const KEY: [u8; 32] = [7u8; 32];
@@ -321,7 +286,7 @@ mod tests {
     const PRINCIPAL: &str = "HTTP/xmip.example@EXAMPLE.COM";
 
     fn token(service: &[&str], realm: &str, key: &[u8], sealed: &[u8]) -> String {
-        STANDARD.encode(ap_req(service, realm, key, sealed))
+        codec::base64::encode(&ap_req(service, realm, key, sealed))
     }
 
     fn sealed_for(client: &[&str], start: i64, end: i64) -> Vec<u8> {
@@ -333,7 +298,8 @@ mod tests {
     }
 
     fn presented(token: &str) -> Presented {
-        Presented::passed(mechanism::kerberos(), PRINCIPAL).with_proof(AP_REQ_PROOF, token)
+        Presented::passed(mechanism::kerberos(), PRINCIPAL)
+            .with_proof(evidence::KERBEROS_AP_REQ, token)
     }
 
     #[test]
@@ -363,7 +329,10 @@ mod tests {
         let sealed = sealed_for(&["alice"], NOW - 3_600, NOW + 3_600);
         let other = ["HTTP", "other.example"];
         let claim = Presented::passed(mechanism::kerberos(), "HTTP/other.example@EXAMPLE.COM")
-            .with_proof(AP_REQ_PROOF, token(&other, REALM, &KEY, &sealed));
+            .with_proof(
+                evidence::KERBEROS_AP_REQ,
+                token(&other, REALM, &KEY, &sealed),
+            );
 
         let failure = verifier().verify(&claim).expect_err("refused");
 
@@ -398,7 +367,10 @@ mod tests {
     fn a_ticket_whose_service_is_not_the_claim_is_refused() {
         let sealed = sealed_for(&["alice"], NOW - 3_600, NOW + 3_600);
         let claim = Presented::passed(mechanism::kerberos(), "HTTP/wrong.example@EXAMPLE.COM")
-            .with_proof(AP_REQ_PROOF, token(SERVICE, REALM, &KEY, &sealed));
+            .with_proof(
+                evidence::KERBEROS_AP_REQ,
+                token(SERVICE, REALM, &KEY, &sealed),
+            );
 
         let failure = verifier().verify(&claim).expect_err("refused");
 
@@ -412,20 +384,17 @@ mod tests {
 
         for spelling in ["HTTP/XMIP.Example@example.com", "HTTP/xmip.example"] {
             let claim = Presented::passed(mechanism::kerberos(), spelling)
-                .with_evidence(
-                    identify::principal::SERVICE,
-                    "HTTP/xmip.example@example.com",
-                )
-                .with_proof(AP_REQ_PROOF, &token);
+                .with_evidence(evidence::PRINCIPAL_SERVICE, "HTTP/xmip.example@example.com")
+                .with_proof(evidence::KERBEROS_AP_REQ, &token);
             let client = verifier().client_principal_of(&claim).expect("a client");
 
             assert_eq!(verifier().verify(&claim).expect("proven"), Verified::Proven);
             let conclusion = verifier().conclude(&claim).expect("proven");
             assert_eq!(
-                conclusion.learned(identify::principal::USER),
+                conclusion.learned(evidence::PRINCIPAL_USER),
                 Some("Alice@example.com")
             );
-            assert!(conclusion.learned(CLIENT).is_some());
+            assert!(conclusion.learned(evidence::KERBEROS_CLIENT).is_some());
             assert_eq!(client.to_string(), "Alice@example.com", "{spelling}");
             assert!(client.is(&UserPrincipalName::parse("EXAMPLE.COM\\alice").expect("a name")));
         }
@@ -436,9 +405,9 @@ mod tests {
         let sealed = sealed_for(&["host", "pc1.example"], NOW - 3_600, NOW + 3_600);
         let token = token(SERVICE, REALM, &KEY, &sealed);
         let cased = Presented::passed(mechanism::kerberos(), "http/xmip.example@EXAMPLE.COM")
-            .with_proof(AP_REQ_PROOF, &token);
+            .with_proof(evidence::KERBEROS_AP_REQ, &token);
         let filed = presented(&token)
-            .with_evidence(identify::principal::SERVICE, "HTTP/xmip.example@other.com");
+            .with_evidence(evidence::PRINCIPAL_SERVICE, "HTTP/xmip.example@other.com");
 
         let class = verifier().verify(&cased).expect_err("refused");
         let realm = verifier().verify(&filed).expect_err("refused");
