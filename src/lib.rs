@@ -40,9 +40,10 @@ pub mod enc_ticket_part;
 pub use enc_ticket_part::EncTicketPart;
 
 use authenticate::clock::{Clock, Window};
-use authenticate::{AuthenticateError, Authenticator, Conclusion, Presented};
+use authenticate::{AuthenticateError, Authenticator, Conclusion};
 use context::Verified;
 use crypto::{AES256_CTS_HMAC_SHA1_96, TICKET_KEY_USAGE};
+use identify::Presented;
 use identify::evidence::{self, KERBEROS_AP_REQ};
 use identify::kerberos::Ticket;
 use identify::{ServicePrincipalName, UserPrincipalName};
