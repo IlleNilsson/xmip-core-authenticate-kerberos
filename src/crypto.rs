@@ -55,7 +55,7 @@ pub fn decrypt(base_key: &[u8], usage: u32, message: &[u8]) -> Result<Vec<u8>, A
     let (ciphertext, mac) = message.split_at(message.len() - MAC_LENGTH);
     let plaintext = cbc_cts_decrypt(&cipher(&ke)?, ciphertext)?;
 
-    if hmac_sha1(&ki, &plaintext)[..MAC_LENGTH] != *mac {
+    if !codec::constant_time::equal(&hmac_sha1(&ki, &plaintext)[..MAC_LENGTH], mac) {
         return Err(AuthenticateError::new(
             "the Kerberos ticket's checksum does not match: it was not sealed under this key",
         ));
