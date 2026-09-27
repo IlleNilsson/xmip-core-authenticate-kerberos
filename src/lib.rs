@@ -107,11 +107,7 @@ fn same_service(ours: &str, theirs: &str) -> bool {
 /// The service the claim names: its `principal.service` evidence and its
 /// value must each be the service the ticket is for.
 fn claims(presented: &Presented, service: &str) -> Result<(), AuthenticateError> {
-    let evidence = presented
-        .evidence
-        .iter()
-        .find(|(name, _)| name == evidence::PRINCIPAL_SERVICE)
-        .map(|(_, value)| value.as_str());
+    let evidence = presented.evidence(evidence::PRINCIPAL_SERVICE);
     match [Some(presented.value.as_str()), evidence]
         .into_iter()
         .flatten()
@@ -158,12 +154,6 @@ impl Verifier {
 
     /// The AP-REQ its base64 proof carries.
     fn ticket_of(presented: &Presented) -> Result<Ticket, AuthenticateError> {
-        let name = presented.mechanism.name();
-        if name != mechanism::kerberos().name() {
-            return Err(AuthenticateError::new(format!(
-                "'{name}' was presented and this authenticator verifies kerberos"
-            )));
-        }
         let encoded = presented.proof(evidence::KERBEROS_AP_REQ).ok_or_else(|| {
             AuthenticateError::new(format!("no {KERBEROS_AP_REQ} proof was presented"))
         })?;
@@ -445,17 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn another_mechanism_and_a_missing_proof_are_each_refused_by_name() {
-        let other = Presented::passed(mechanism::ntlm(), PRINCIPAL);
+    fn a_missing_proof_is_refused_by_name() {
         let bare = Presented::passed(mechanism::kerberos(), PRINCIPAL);
 
-        assert!(
-            verifier()
-                .verify(&other)
-                .expect_err("refused")
-                .message
-                .contains("'ntlm' was presented")
-        );
         assert!(
             verifier()
                 .verify(&bare)
