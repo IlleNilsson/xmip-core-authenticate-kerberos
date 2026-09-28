@@ -7,11 +7,12 @@
 //! this gate reads is the cipher's plaintext, an `EncTicketPart` (RFC 4120
 //! section 5.3): the client principal the ticket names and the window it is
 //! valid for. Its fields are read with the same capability's `required` and
-//! `principal`, on the estate's one X.690 reader.
+//! `principal`, its string and times with the same capability's `string` and
+//! `time`, on the estate's one X.690 reader.
 
 use asn1::{Element, SEQUENCE, application};
 use authenticate::AuthenticateError;
-use identify::kerberos::{principal, required, written};
+use identify::kerberos::{principal, required, string, time, written};
 
 /// The application tag of an `EncTicketPart`.
 const ENC_TICKET_PART: u8 = 3;
@@ -47,20 +48,17 @@ impl EncTicketPart {
         let part = Element::expect(plaintext, application(ENC_TICKET_PART), "an EncTicketPart")?;
         let part = Element::expect(part.content, SEQUENCE, "an EncTicketPart")?;
 
-        let client_realm = required(&part, 2, "client realm")?
-            .text()
+        let client_realm = string(&required(&part, 2, "client realm")?)
             .ok_or_else(|| AuthenticateError::new("the ticket's client realm is not readable"))?
             .to_string();
         let client = principal(required(&part, 3, "client name")?)?;
-        let authtime = required(&part, 5, "authtime")?
-            .time()
+        let authtime = time(&required(&part, 5, "authtime")?)
             .ok_or_else(|| AuthenticateError::new("the ticket's authtime is not a KerberosTime"))?;
         let start = part
             .field(6)?
-            .and_then(|starttime| starttime.time())
+            .and_then(|starttime| time(&starttime))
             .unwrap_or(authtime);
-        let end = required(&part, 7, "endtime")?
-            .time()
+        let end = time(&required(&part, 7, "endtime")?)
             .ok_or_else(|| AuthenticateError::new("the ticket's endtime is not a KerberosTime"))?;
 
         Ok(Self {

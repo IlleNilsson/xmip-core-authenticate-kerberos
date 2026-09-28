@@ -11,16 +11,15 @@
 //! implemented, and any other is refused by name where a ticket names it.
 
 use aes::Aes256;
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as _};
+use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt};
 use authenticate::AuthenticateError;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use pbkdf2::pbkdf2;
 use sha1::Sha1;
 
 /// HMAC-SHA1 keyed by `key`, over `data`.
 fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    let mut mac = <Hmac<Sha1> as KeyInit>::new_from_slice(key).expect("HMAC takes any key length");
     mac.update(data);
     mac.finalize().into_bytes().to_vec()
 }
@@ -88,7 +87,8 @@ fn cipher(key: &[u8]) -> Result<Aes256, AuthenticateError> {
             "an aes256-cts-hmac-sha1-96 key is thirty-two bytes",
         ));
     }
-    Ok(Aes256::new(GenericArray::from_slice(key)))
+    Aes256::new_from_slice(key)
+        .map_err(|_| AuthenticateError::new("an AES-256 key is thirty-two bytes"))
 }
 
 /// DK(base, usage as four bytes then `variant`), RFC 3961 section 5.1.
@@ -105,7 +105,7 @@ fn derive_from(base: &Aes256, constant: &[u8]) -> Result<Vec<u8>, AuthenticateEr
         .map_err(|_| AuthenticateError::new("n-fold produced the wrong length"))?;
     let mut material = Vec::with_capacity(KEY_LENGTH);
     while material.len() < KEY_LENGTH {
-        let mut cipher_block = GenericArray::clone_from_slice(&block);
+        let mut cipher_block = Array::from(block);
         base.encrypt_block(&mut cipher_block);
         block = cipher_block.into();
         material.extend_from_slice(&block);
@@ -168,7 +168,7 @@ const fn gcd(mut a: usize, mut b: usize) -> usize {
 }
 
 fn aes_decrypt_block(cipher: &Aes256, block: &[u8]) -> [u8; BLOCK] {
-    let mut buffer = GenericArray::clone_from_slice(block);
+    let mut buffer = Array::try_from(block).expect("a block of sixteen bytes");
     cipher.decrypt_block(&mut buffer);
     buffer.into()
 }
@@ -236,7 +236,7 @@ pub(crate) mod tests {
     fn cbc_cts_encrypt(cipher: &Aes256, plaintext: &[u8]) -> Vec<u8> {
         let length = plaintext.len();
         let encrypt = |block: [u8; BLOCK]| {
-            let mut buffer = GenericArray::from(block);
+            let mut buffer = Array::from(block);
             cipher.encrypt_block(&mut buffer);
             <[u8; BLOCK]>::from(buffer)
         };
