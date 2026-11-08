@@ -29,6 +29,27 @@ pub struct EncTicketPart {
     pub start: i64,
     /// When the ticket stops being valid, in seconds since the Unix epoch.
     pub end: i64,
+    /// The session key the KDC gave the client and sealed in the ticket for
+    /// the service: what the authenticator is sealed under.
+    pub session_key: SessionKey,
+}
+
+/// An `EncryptionKey` (RFC 4120 section 5.2.9): its type and its bytes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SessionKey {
+    /// The encryption type the key is for: 18 is `aes256-cts-hmac-sha1-96`.
+    pub key_type: u32,
+    /// The key itself.
+    pub value: Vec<u8>,
+}
+
+/// The key is a secret and not printed; its type says which it is.
+impl std::fmt::Debug for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionKey")
+            .field("key_type", &self.key_type)
+            .finish_non_exhaustive()
+    }
 }
 
 impl EncTicketPart {
@@ -60,12 +81,25 @@ impl EncTicketPart {
             .unwrap_or(authtime);
         let end = time(&required(&part, 7, "endtime")?)
             .ok_or_else(|| AuthenticateError::new("the ticket's endtime is not a KerberosTime"))?;
+        let key = required(&part, 1, "session key")?;
+        if key.tag != SEQUENCE {
+            return Err(AuthenticateError::new(
+                "the ticket's session key is not an EncryptionKey",
+            ));
+        }
+        let session_key = SessionKey {
+            key_type: required(&key, 0, "session key type")?
+                .integer()
+                .ok_or_else(|| AuthenticateError::new("the session key's type is not read"))?,
+            value: required(&key, 1, "session key value")?.content.to_vec(),
+        };
 
         Ok(Self {
             client_realm,
             client,
             start,
             end,
+            session_key,
         })
     }
 }
@@ -74,11 +108,11 @@ impl EncTicketPart {
 pub(crate) mod tests {
     use super::*;
     use crate::crypto::{self, TICKET_KEY_USAGE};
-    use asn1::{GENERAL_STRING, GENERALIZED_TIME, tlv};
+    use asn1::{GENERAL_STRING, GENERALIZED_TIME, INTEGER, OCTET_STRING, tlv};
     use identify::kerberos::fixture::{self, field};
 
     /// `YYYYMMDDHHMMSSZ` for a Unix time; the tests use whole minutes.
-    fn kerberos_time(seconds: i64) -> Vec<u8> {
+    pub(crate) fn kerberos_time(seconds: i64) -> Vec<u8> {
         // 2027-01-15T08:00:00Z is 1_800_000_000; the tests offset from there.
         let table = [
             (1_800_000_000i64, "20270115080000Z"),
@@ -95,10 +129,16 @@ pub(crate) mod tests {
         tlv(GENERALIZED_TIME, text.as_bytes())
     }
 
-    /// A sealed `EncTicketPart` for a client valid over `[start, end]`.
+    /// The session key every test ticket carries.
+    pub(crate) const SESSION_KEY: [u8; 32] = [9u8; 32];
+
+    /// A sealed `EncTicketPart` for a client valid over `[start, end]`,
+    /// holding [`SESSION_KEY`].
     pub(crate) fn enc_ticket_part(realm: &str, client: &[&str], start: i64, end: i64) -> Vec<u8> {
+        let mut key = field(0, &tlv(INTEGER, &[18]));
+        key.extend(field(1, &tlv(OCTET_STRING, &SESSION_KEY)));
         let mut fields = field(0, &tlv(0x03, &[0, 0, 0, 0, 0])); // flags, BIT STRING
-        fields.extend(field(1, &tlv(SEQUENCE, &[]))); // key, elided shape
+        fields.extend(field(1, &tlv(SEQUENCE, &key)));
         fields.extend(field(2, &tlv(GENERAL_STRING, realm.as_bytes())));
         fields.extend(field(3, &fixture::principal_name(client)));
         fields.extend(field(4, &tlv(SEQUENCE, &[]))); // transited
@@ -107,10 +147,19 @@ pub(crate) mod tests {
         tlv(application(ENC_TICKET_PART), &tlv(SEQUENCE, &fields))
     }
 
-    /// A bare AP-REQ whose ticket is for `service@realm`, sealed under `key`.
-    pub(crate) fn ap_req(service: &[&str], realm: &str, key: &[u8], sealed: &[u8]) -> Vec<u8> {
+    /// A bare AP-REQ whose ticket is for `service@realm`, sealed under `key`,
+    /// with `authenticator` sealed under [`SESSION_KEY`].
+    pub(crate) fn ap_req(
+        service: &[&str],
+        realm: &str,
+        key: &[u8],
+        sealed: &[u8],
+        authenticator: &[u8],
+    ) -> Vec<u8> {
         let cipher = crypto::tests::encrypt(key, TICKET_KEY_USAGE, [5u8; 16], sealed);
-        fixture::ap_req(service, realm, &cipher)
+        let usage = crypto::AUTHENTICATOR_KEY_USAGE;
+        let proof = crypto::tests::encrypt(&SESSION_KEY, usage, [6u8; 16], authenticator);
+        fixture::ap_req_with(service, realm, &cipher, &proof)
     }
 
     #[test]

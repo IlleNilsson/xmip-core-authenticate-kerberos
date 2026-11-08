@@ -28,6 +28,9 @@ fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
 pub const AES256_CTS_HMAC_SHA1_96: u32 = 18;
 /// The key usage RFC 4120 gives a ticket's `enc-part`.
 pub const TICKET_KEY_USAGE: u32 = 2;
+/// The key usage RFC 4120 gives an AP-REQ's authenticator, sealed under the
+/// ticket's session key.
+pub const AUTHENTICATOR_KEY_USAGE: u32 = 11;
 /// Bytes in an AES-256 key, and the CBC block size.
 const KEY_LENGTH: usize = 32;
 const BLOCK: usize = 16;
