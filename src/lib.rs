@@ -18,7 +18,11 @@
 //! and spends it in a replay cache, so an AP-REQ copied off the wire and
 //! presented again is refused. It refuses where the service principal is not
 //! the claim, where no held key opens the ticket, or where the ticket is
-//! outside its window with the configured leeway. The token is read by the
+//! outside its window with the configured leeway. The leeway is the
+//! `clock_skew` setting and the replay cache's bound the `replay_capacity`
+//! setting, both declared in [`settings`] with their defaults: an
+//! authenticator is kept until its skew has passed, and a cache full of live
+//! ones refuses the next rather than forget one. The token is read by the
 //! identify capability's `identify::kerberos::Ticket`, the reader the first
 //! gate reads it with; only the decrypted [`EncTicketPart`] and
 //! [`authenticator::Authenticator`] are read here.
@@ -43,8 +47,10 @@
 pub mod authenticator;
 pub mod crypto;
 pub mod enc_ticket_part;
+pub mod settings;
 
 pub use enc_ticket_part::EncTicketPart;
+pub use settings::SETTINGS;
 
 use authenticate::clock::{Clock, Window};
 use authenticate::replay::Replay;
@@ -137,17 +143,6 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    /// Verifies against this keytab, with five minutes of leeway on the
-    /// ticket's window and the authenticator's clock, and the system clock.
-    #[must_use]
-    pub fn new(keytab: Vec<KeyEntry>) -> Self {
-        Self {
-            keytab,
-            clock: Clock::system(300),
-            spent: Replay::default(),
-        }
-    }
-
     /// How far a clock may be off before the validity window bites.
     #[must_use]
     pub fn with_leeway(mut self, seconds: i64) -> Self {
@@ -373,6 +368,77 @@ mod tests {
         let replay = gate.verify(&claim).expect_err("a replay");
 
         assert!(replay.message.contains("replay"), "{replay}");
+    }
+
+    #[test]
+    fn the_same_authenticator_sealed_into_a_second_ap_req_is_a_replay() {
+        // RFC 4120 3.2.3: the replay is the client, the server, ctime and
+        // cusec seen before, however the AP-REQ around them is sealed.
+        let gate = verifier();
+        let once = alice();
+        let again = made(
+            SERVICE,
+            &KEY,
+            &["alice"],
+            NOW - 86_400,
+            NOW + 86_400,
+            &authenticator(REALM, &["alice"], NOW, 1),
+        );
+        assert_ne!(once, again);
+
+        gate.verify(&presented(&once)).expect("proven");
+        let replay = gate.verify(&presented(&again)).expect_err("a replay");
+        let later = made(
+            SERVICE,
+            &KEY,
+            &["alice"],
+            NOW - 86_400,
+            NOW + 86_400,
+            &authenticator(REALM, &["alice"], NOW, 2),
+        );
+
+        assert!(replay.message.contains("replay"), "{replay}");
+        gate.verify(&presented(&later)).expect("another cusec");
+    }
+
+    #[test]
+    fn the_configured_skew_and_replay_bound_are_the_ones_held() {
+        let skewed = made(
+            SERVICE,
+            &KEY,
+            &["alice"],
+            NOW - 3_600,
+            NOW + 3_600,
+            &authenticator(REALM, &["alice"], NOW - 90, 1),
+        );
+        let configured = |given: &[(&str, xcore::settings::Given)]| {
+            let given: Vec<_> = given
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), value.clone()))
+                .collect();
+            Verifier::configured(
+                vec![KeyEntry::new(PRINCIPAL, Some(3), KEY.to_vec())],
+                &given,
+            )
+            .expect("configured")
+            .with_clock(|| NOW)
+        };
+        let text = |value: &str| xcore::settings::Given::Text(value.to_string());
+
+        configured(&[])
+            .verify(&presented(&skewed))
+            .expect("ninety seconds is within the default five minutes");
+        let tight = configured(&[("clock_skew", text("1m"))])
+            .verify(&presented(&skewed))
+            .expect_err("ninety seconds is beyond one minute");
+        let small = configured(&[("replay_capacity", xcore::settings::Given::Integer(1))]);
+        small.verify(&presented(&alice())).expect("the first");
+        let full = small
+            .verify(&presented(&skewed))
+            .expect_err("the cache holds one live authenticator");
+
+        assert!(tight.message.contains("60 seconds of skew"), "{tight}");
+        assert!(full.message.contains("have not expired"), "{full}");
     }
 
     #[test]

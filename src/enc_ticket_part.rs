@@ -111,11 +111,12 @@ pub(crate) mod tests {
     use asn1::{GENERAL_STRING, GENERALIZED_TIME, INTEGER, OCTET_STRING, tlv};
     use identify::kerberos::fixture::{self, field};
 
-    /// `YYYYMMDDHHMMSSZ` for a Unix time; the tests use whole minutes.
+    /// `YYYYMMDDHHMMSSZ` for a Unix time the tests use.
     pub(crate) fn kerberos_time(seconds: i64) -> Vec<u8> {
         // 2027-01-15T08:00:00Z is 1_800_000_000; the tests offset from there.
         let table = [
             (1_800_000_000i64, "20270115080000Z"),
+            (1_800_000_000 - 90, "20270115075830Z"),
             (1_800_000_000 - 3_600, "20270115070000Z"),
             (1_800_000_000 + 3_600, "20270115090000Z"),
             (1_800_000_000 - 86_400, "20270114080000Z"),
