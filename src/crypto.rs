@@ -11,18 +11,9 @@
 //! implemented, and any other is refused by name where a ticket names it.
 
 use aes::Aes256;
-use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt};
+use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use authenticate::AuthenticateError;
-use hmac::{Hmac, KeyInit, Mac};
-use pbkdf2::pbkdf2;
-use sha1::Sha1;
-
-/// HMAC-SHA1 keyed by `key`, over `data`.
-fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = <Hmac<Sha1> as KeyInit>::new_from_slice(key).expect("HMAC takes any key length");
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
-}
+use codec::digest::{hmac_sha1, pbkdf2_hmac_sha1};
 
 /// `aes256-cts-hmac-sha1-96`, RFC 3962.
 pub const AES256_CTS_HMAC_SHA1_96: u32 = 18;
@@ -78,8 +69,7 @@ pub fn string_to_key(
     iterations: u32,
 ) -> Result<Vec<u8>, AuthenticateError> {
     let mut tentative = [0u8; KEY_LENGTH];
-    pbkdf2::<Hmac<Sha1>>(password, salt, iterations, &mut tentative)
-        .map_err(|_| AuthenticateError::new("the PBKDF2 output length is wrong"))?;
+    pbkdf2_hmac_sha1(password, salt, iterations, &mut tentative);
     let cipher = cipher(&tentative)?;
     derive_from(&cipher, b"kerberos")
 }
