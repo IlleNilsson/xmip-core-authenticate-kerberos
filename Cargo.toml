@@ -14,20 +14,20 @@ path = "src/lib.rs"
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md): authenticate for the trait and Presented, context
 # for Verified, xcore for the mechanism catalog.
-authenticate = { package = "xmip-core-authenticate", git = "https://github.com/IlleNilsson/xmip-core-authenticate", branch = "main" }
+authenticate = { workspace = true }
 # identify for the principal name types: no technology parses a principal
 # name itself (ADR-0054).
-identify = { package = "xmip-core-identify", git = "https://github.com/IlleNilsson/xmip-core-identify", branch = "main" }
-context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
-xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+identify = { workspace = true }
+context = { workspace = true }
+xcore = { workspace = true }
 # X.690: the ticket is DER, read with the estate's one reader.
-asn1 = { package = "xmip-core-library-asn1", git = "https://github.com/IlleNilsson/xmip-core-library-asn1", branch = "main" }
+asn1 = { workspace = true }
 # RFC 3962: AES-256 in CBC with ciphertext stealing.
 aes = "0.9"
 # The estate's encoding primitives: the base 64 the AP-REQ arrives in, hex,
 # which the RFC 3961 vectors are written in, and HMAC-SHA1-96 for the
 # checksum and PBKDF2-HMAC-SHA1 for a key from a password (codec::digest).
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+codec = { workspace = true }
 
 [lints]
 workspace = true
